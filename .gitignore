@@ -1,0 +1,53 @@
+# Virtual Environment
+venv/
+.env/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# VS Code
+.vscode/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Streamlit
+.streamlit/
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+
+# Generated PDFs
+*.pdf
+
+# Model / cache files
+.cache/
+models/
+
+# Ollama local files (optional)
+ollama/
+
+# Secrets / API keys
+.env
+.env.*
+
+# Build files
+dist/
+build/
+*.egg-info/
+
+# Misc
+*.bak
+*.swp
