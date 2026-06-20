@@ -3,10 +3,18 @@ from PyPDF2 import PdfReader
 import faiss
 from sentence_transformers import SentenceTransformer
 import numpy as np
-import ollama
+import google.generativeai as genai
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 import tempfile
+
+@st.cache_resource
+def load_embedding_model():
+    return SentenceTransformer("all-MiniLM-L6-v2")
+
+embedding_model = load_embedding_model()
+
+genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 
 st.title("AI Question Paper Generator")
 
@@ -20,109 +28,152 @@ option = st.radio("Choose Input Type", ["Upload PDF", "Enter Text"])
 def extract_text_from_pdf(uploaded_file):
     reader = PdfReader(uploaded_file)
     text = ""
+
     for page in reader.pages:
         extracted = page.extract_text()
         if extracted:
-            text += extracted
+            text += extracted + " "
+
     return text
 
 def rel_text(text, text_size):
     words = text.split()
     texts = []
+
     for i in range(0, len(words), text_size):
         chunk = " ".join(words[i:i + text_size])
         texts.append(chunk)
+
     return texts
 
 def embed_text(rel):
-    model = SentenceTransformer("all-MiniLM-L6-v2")
-    embeddings = model.encode(rel)
+    embeddings = embedding_model.encode(rel)
 
-    index = faiss.IndexFlatL2(len(embeddings[0]))
-    index.add(np.array(embeddings))
+    index = faiss.IndexFlatL2(embeddings.shape[1])
+    index.add(np.array(embeddings, dtype=np.float32))
 
-    query = "Short definition based concepts"
-    query_embd = model.encode([query])
+    query = "Important topics for examination questions"
+    query_embedding = embedding_model.encode([query])
 
-    distance, indices = index.search(query_embd, 5)
-    results = []
-    for i in indices[0]:
-        results.append(rel[i])
+    distances, indices = index.search(
+        np.array(query_embedding, dtype=np.float32),
+        min(5, len(rel))
+    )
+
+    results = [rel[i] for i in indices[0]]
 
     return " ".join(results)
 
 def generate_quest(context, duration, total_marks, num_questions):
     prompt = f"""
-    Based on the following content:
-    {context}
+Based on the following content:
 
-    Generate a question paper with:
-    - Duration : {duration}
-    - Total Marks: {total_marks}
-    - Number of Questions: {num_questions}
+{context}
 
-    Divide the questions into:
-    Section A 
-    Section B 
-    Section C 
+Generate a professional university-level question paper.
 
-    Instructions:
-    - Section A → short definition-based questions
-    - Section B → moderate explanation questions
-    - Section C → long descriptive questions
-    - Proper numbering (Q1, Q2...)
-    - Maintain clean academic format
-    """
+Requirements:
+- Duration: {duration}
+- Total Marks: {total_marks}
+- Number of Questions: {num_questions}
 
-    response = ollama.chat(
-        model="llama3:latest",
-        messages=[{"role": "user", "content": prompt}]
-    )
+Structure:
 
-    return response["message"]["content"]
+SECTION A
+- Short definition-based questions
+
+SECTION B
+- Medium-length explanation questions
+
+SECTION C
+- Long descriptive and analytical questions
+
+Instructions:
+- Use proper academic formatting
+- Use question numbering
+- Distribute questions appropriately across sections
+- Ensure questions are relevant to the provided content
+- Include marks allocation where appropriate
+"""
+
+    try:
+        model = genai.GenerativeModel("gemini-2.5-flash")
+        response = model.generate_content(prompt)
+        return response.text
+
+    except Exception as e:
+        return f"Error generating question paper: {str(e)}"
 
 def create_pdf(text, college):
     temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+
     doc = SimpleDocTemplate(temp_file.name)
     styles = getSampleStyleSheet()
+
     story = []
 
     story.append(Paragraph(f"<b>{college}</b>", styles["Title"]))
+    story.append(Spacer(1, 12))
 
-    lines = text.split("\n")
-    for line in lines:
+    for line in text.split("\n"):
         line = line.strip()
-        if "Section A" in line or "Section B" in line or "Section C" in line:
-            story.append(Paragraph(f"<b>{line}</b>", styles["Normal"]))
+
+        if not line:
+            continue
+
+        if (
+            "SECTION A" in line.upper()
+            or "SECTION B" in line.upper()
+            or "SECTION C" in line.upper()
+        ):
+            story.append(Paragraph(f"<b>{line}</b>", styles["Heading2"]))
         else:
             story.append(Paragraph(line, styles["Normal"]))
-        story.append(Spacer(1, 8))
+
+        story.append(Spacer(1, 6))
 
     doc.build(story)
+
     return temp_file.name
 
 input_text = ""
 
 if option == "Upload PDF":
     uploaded_file = st.file_uploader("Upload PDF", type=["pdf"])
+
     if uploaded_file is not None:
         input_text = extract_text_from_pdf(uploaded_file)
 
-elif option == "Enter Text":
+else:
     input_text = st.text_area("Enter your text here")
 
 if st.button("Generate Question Paper"):
     if input_text and college and duration:
+
         rel = rel_text(input_text, 50)
+
         context = embed_text(rel)
-        result = generate_quest(context, duration, total_marks, num_questions)
+
+        with st.spinner("Generating Question Paper..."):
+            result = generate_quest(
+                context,
+                duration,
+                total_marks,
+                num_questions
+            )
 
         st.subheader("Generated Question Paper")
-        st.text(result)
+        st.markdown(result)
 
         pdf_path = create_pdf(result, college)
 
         with open(pdf_path, "rb") as f:
-            st.download_button("Download PDF", f, file_name="question_paper.pdf")
+            st.download_button(
+                label="Download PDF",
+                data=f,
+                file_name="question_paper.pdf",
+                mime="application/pdf"
+            )
+
     else:
-        st.error("Please fill all inputs")
+        st.error("Please fill all inputs and provide content.")

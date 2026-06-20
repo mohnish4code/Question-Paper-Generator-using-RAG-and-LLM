@@ -1,7 +1,10 @@
 streamlit
 PyPDF2
 faiss-cpu
-ollama
+sentence-transformers
 numpy
 reportlab
-sentence-transformers
+google-generativeai
+torch
+transformers
+dotenv

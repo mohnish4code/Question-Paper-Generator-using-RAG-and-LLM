@@ -2,9 +2,19 @@ from PyPDF2 import PdfReader
 import faiss
 from sentence_transformers import SentenceTransformer
 import numpy as np
-import ollama
+import google.generativeai as genai
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+genai.configure(
+    api_key=os.getenv("GOOGLE_API_KEY")
+)
+
+embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
 
 def credentials():
     college = input("Enter College Name: ")
@@ -14,106 +24,174 @@ def credentials():
     return college, duration, total_marks, num_questions
 
 def enter_choices():
-    e = input("Enter the choice for the format(pdf(1)/text(2)) : ")
-    if e == "1":
+    choice = input("Enter the choice for the format(pdf(1)/text(2)): ")
+
+    if choice == "1":
         file_name = input("Enter PDF file path: ")
         return extract_text_from_pdf(file_name)
-    elif e == "2":
+
+    elif choice == "2":
         return input("Enter text: ")
+
     else:
         print("Enter a valid choice")
         return enter_choices()
 
 def extract_text_from_pdf(file_name):
     reader = PdfReader(file_name)
+
     text = ""
+
     for page in reader.pages:
         extracted = page.extract_text()
+
         if extracted:
-            text += extracted
+            text += extracted + " "
+
     return text
 
 def rel_text(text, text_size):
     words = text.split()
+
     texts = []
+
     for i in range(0, len(words), text_size):
         chunk = " ".join(words[i:i + text_size])
         texts.append(chunk)
+
     return texts
 
 def embed_text(rel):
-    model = SentenceTransformer("all-MiniLM-L6-v2")
-    embeddings = model.encode(rel)
+    embeddings = embedding_model.encode(rel)
 
-    index = faiss.IndexFlatL2(len(embeddings[0]))
-    index.add(np.array(embeddings))
+    index = faiss.IndexFlatL2(embeddings.shape[1])
 
-    query = "Short definition based concepts"
-    query_embd = model.encode([query])
+    index.add(np.array(embeddings, dtype=np.float32))
 
-    distance, indices = index.search(query_embd, 5)
-    results = []
-    for i in indices[0]:
-        results.append(rel[i])
+    query = "Important topics for examination questions"
+
+    query_embedding = embedding_model.encode([query])
+
+    distances, indices = index.search(
+        np.array(query_embedding, dtype=np.float32),
+        min(5, len(rel))
+    )
+
+    results = [rel[i] for i in indices[0]]
 
     return " ".join(results)
 
 def generate_quest(context, duration, total_marks, num_questions):
+
     prompt = f"""
-    Based on the following content:
-    {context}
+Based on the following content:
 
-    Generate a question paper with:
-    - Duration : {duration}
-    - Total Marks: {total_marks}
-    - Number of Questions: {num_questions}
+{context}
 
-    Divide the questions into:
-    Section A 
-    Section B 
-    Section C 
+Generate a professional university-level question paper.
 
-    Instructions:
-    - Section A → short definition-based questions
-    - Section B → moderate explanation questions
-    - Section C → long descriptive questions
-    - Proper numbering (Q1, Q2...)
-    - Maintain clean academic format
-    """
+Requirements:
+- Duration: {duration}
+- Total Marks: {total_marks}
+- Number of Questions: {num_questions}
 
-    response = ollama.chat(
-        model="llama3:latest",
-        messages=[{"role": "user", "content": prompt}]
-    )
+Structure:
 
-    return response["message"]["content"]
+SECTION A
+- Short definition-based questions
 
-def question_paper(t, filename, college):
+SECTION B
+- Medium-length explanation questions
+
+SECTION C
+- Long descriptive and analytical questions
+
+Instructions:
+- Use proper academic formatting
+- Use question numbering
+- Distribute questions appropriately across sections
+- Ensure questions are relevant to the provided content
+- Include marks allocation where appropriate
+"""
+
+    try:
+        model = genai.GenerativeModel("gemini-2.5-flash")
+
+        response = model.generate_content(prompt)
+
+        return response.text
+
+    except Exception as e:
+        return f"Error generating question paper: {str(e)}"
+
+def question_paper(text, filename, college):
+
     doc = SimpleDocTemplate(filename)
+
     styles = getSampleStyleSheet()
+
     story = []
 
     story.append(Paragraph(f"<b>{college}</b>", styles["Title"]))
+    story.append(Spacer(1, 12))
 
-    lines = t.split("\n")
-    for line in lines:
+    for line in text.split("\n"):
+
         line = line.strip()
-        if "Section A" in line or "Section B" in line or "Section C" in line:
-            story.append(Paragraph(f"<b>{line}</b>", styles["Normal"]))
+
+        if not line:
+            continue
+
+        if (
+            "SECTION A" in line.upper()
+            or "SECTION B" in line.upper()
+            or "SECTION C" in line.upper()
+        ):
+            story.append(
+                Paragraph(
+                    f"<b>{line}</b>",
+                    styles["Heading2"]
+                )
+            )
+
         else:
-            story.append(Paragraph(line, styles["Normal"]))
-        story.append(Spacer(1, 8))
+            story.append(
+                Paragraph(
+                    line,
+                    styles["Normal"]
+                )
+            )
+
+        story.append(Spacer(1, 6))
 
     doc.build(story)
-    print("Your pdf is saved")
+
+    print("Question paper PDF saved successfully.")
 
 college, duration, total_marks, num_questions = credentials()
+
 text = enter_choices()
+
 rel = rel_text(text, 50)
+
 context = embed_text(rel)
 
-result = generate_quest(context, duration, total_marks, num_questions)
+result = generate_quest(
+    context,
+    duration,
+    total_marks,
+    num_questions
+)
+
+print("\nGenerated Question Paper:\n")
 print(result)
 
-output_file = input("Enter filename to save (e.g., qp.pdf): ")
-question_paper(result, output_file, college)
+output_file = input(
+    "\nEnter filename to save (e.g., qp.pdf): "
+)
+
+question_paper(
+    result,
+    output_file,
+    college
+)
